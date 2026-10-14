@@ -14,6 +14,9 @@ from pydantic import BaseModel
 
 from backend.src.gemma_explainer import explain_machine_risk
 from backend.src.escalation_engine import EscalationManager
+from backend.src.db.connection import init_db
+from backend.src.auth.router import router as auth_router, seed_demo_users
+from backend.src.db.connection import AsyncSessionLocal
 
 app = FastAPI(title="YantraWatch API", version="1.0.0")
 
@@ -25,6 +28,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
+
 # In-memory cached replay stream & index
 STREAM_DATA = {}
 STREAM_INDEX = []
@@ -32,8 +37,19 @@ METRICS_DATA = {}
 escalation_mgr = EscalationManager()
 
 @app.on_event("startup")
-def load_cached_data():
+async def startup_handler():
     global STREAM_DATA, STREAM_INDEX, METRICS_DATA
+    
+    # 1. Initialize PostgreSQL tables in Neon
+    try:
+        await init_db()
+        # Seed demo accounts if empty
+        async with AsyncSessionLocal() as session:
+            await seed_demo_users(session)
+    except Exception as e:
+        print(f"[!] Database startup error: {e}")
+
+    # 2. Load cached stream and metrics
     stream_path = "backend/data/processed/replay_stream.json"
     index_path = "backend/data/processed/stream_index.json"
     metrics_path = "backend/models/eval_metrics.json"

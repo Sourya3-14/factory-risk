@@ -62,11 +62,40 @@ const countActiveTasks = document.getElementById('countActiveTasks');
 const countEscalatedTasks = document.getElementById('countEscalatedTasks');
 const countResolvedTasks = document.getElementById('countResolvedTasks');
 
+// Auth DOM Elements
+const userProfilePill = document.getElementById('userProfilePill');
+const btnOpenAuthModal = document.getElementById('btnOpenAuthModal');
+const authModal = document.getElementById('authModal');
+const authModalCloseBtn = document.getElementById('authModalCloseBtn');
+const tabSignIn = document.getElementById('tabSignIn');
+const tabSignUp = document.getElementById('tabSignUp');
+const signInForm = document.getElementById('signInForm');
+const signUpForm = document.getElementById('signUpForm');
+const loginEmail = document.getElementById('loginEmail');
+const loginPassword = document.getElementById('loginPassword');
+const loginError = document.getElementById('loginError');
+const signupName = document.getElementById('signupName');
+const signupEmail = document.getElementById('signupEmail');
+const signupPassword = document.getElementById('signupPassword');
+const signupRole = document.getElementById('signupRole');
+const signupFactory = document.getElementById('signupFactory');
+const signupError = document.getElementById('signupError');
+const btnDemoTech = document.getElementById('btnDemoTech');
+const btnDemoSupervisor = document.getElementById('btnDemoSupervisor');
+const btnDemoOwner = document.getElementById('btnDemoOwner');
+const btnLogout = document.getElementById('btnLogout');
+const userName = document.getElementById('userName');
+const userRoleBadge = document.getElementById('userRoleBadge');
+const userAvatar = document.getElementById('userAvatar');
+
+let currentUser = null;
+
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
   setupPhotoDropzone();
   setupControls();
+  setupAuth();
 
   if (geminiApiKeyInput) {
     const savedKey = localStorage.getItem('gemini_api_key') || '';
@@ -80,6 +109,167 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadMetrics();
   await loadTasks();
 });
+
+// --- Authentication & Role Engine ---
+function setupAuth() {
+  btnOpenAuthModal.addEventListener('click', () => {
+    authModal.classList.add('active');
+  });
+
+  authModalCloseBtn.addEventListener('click', () => {
+    authModal.classList.remove('active');
+  });
+
+  authModal.addEventListener('click', (e) => {
+    if (e.target === authModal) authModal.classList.remove('active');
+  });
+
+  // Switch tabs
+  tabSignIn.addEventListener('click', () => {
+    tabSignIn.classList.add('active');
+    tabSignUp.classList.remove('active');
+    signInForm.style.display = 'flex';
+    signUpForm.style.display = 'none';
+  });
+
+  tabSignUp.addEventListener('click', () => {
+    tabSignUp.classList.add('active');
+    tabSignIn.classList.remove('active');
+    signUpForm.style.display = 'flex';
+    signInForm.style.display = 'none';
+  });
+
+  // Demo accounts
+  btnDemoTech.addEventListener('click', () => executeLogin('engineer@yantrawatch.com', 'password123'));
+  btnDemoSupervisor.addEventListener('click', () => executeLogin('supervisor@yantrawatch.com', 'password123'));
+  btnDemoOwner.addEventListener('click', () => executeLogin('owner@yantrawatch.com', 'password123'));
+
+  // Form submits
+  signInForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await executeLogin(loginEmail.value.trim(), loginPassword.value);
+  });
+
+  signUpForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    signupError.style.display = 'none';
+    try {
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: signupEmail.value.trim(),
+          password: signupPassword.value,
+          full_name: signupName.value.trim(),
+          role: signupRole.value,
+          factory_name: signupFactory.value.trim() || 'Yantra Manufacturing Unit 1'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        signupError.textContent = data.detail || 'Signup failed';
+        signupError.style.display = 'block';
+        return;
+      }
+
+      localStorage.setItem('yantrawatch_token', data.access_token);
+      renderUserProfile(data.user);
+      authModal.classList.remove('active');
+    } catch (err) {
+      signupError.textContent = 'Network or server error during registration.';
+      signupError.style.display = 'block';
+    }
+  });
+
+  btnLogout.addEventListener('click', () => {
+    localStorage.removeItem('yantrawatch_token');
+    currentUser = null;
+    userProfilePill.style.display = 'none';
+    btnOpenAuthModal.style.display = 'inline-flex';
+  });
+
+  // Check existing session
+  checkExistingSession();
+}
+
+async function executeLogin(email, password) {
+  loginError.style.display = 'none';
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      loginError.textContent = data.detail || 'Login failed';
+      loginError.style.display = 'block';
+      return;
+    }
+
+    localStorage.setItem('yantrawatch_token', data.access_token);
+    renderUserProfile(data.user);
+    authModal.classList.remove('active');
+  } catch (err) {
+    loginError.textContent = 'Server connection error during login.';
+    loginError.style.display = 'block';
+  }
+}
+
+async function checkExistingSession() {
+  const token = localStorage.getItem('yantrawatch_token');
+  if (!token) {
+    // Default to logging in as Supervisor for immediate full demo access
+    await executeLogin('supervisor@yantrawatch.com', 'password123');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/me', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const user = await res.json();
+      renderUserProfile(user);
+    } else {
+      localStorage.removeItem('yantrawatch_token');
+      await executeLogin('supervisor@yantrawatch.com', 'password123');
+    }
+  } catch (err) {
+    console.error('Session check error:', err);
+  }
+}
+
+function renderUserProfile(user) {
+  currentUser = user;
+  userName.textContent = user.full_name;
+
+  // Format initials
+  const initials = user.full_name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+  userAvatar.textContent = initials;
+
+  let roleLabel = 'Engineer';
+  let badgeClass = 'badge-engineer';
+
+  if (user.role === 'supervisor') {
+    roleLabel = 'Floor Supervisor';
+    badgeClass = 'badge-supervisor';
+  } else if (user.role === 'factory_owner') {
+    roleLabel = 'Factory Owner';
+    badgeClass = 'badge-owner';
+  } else {
+    roleLabel = 'Maintenance Engineer';
+    badgeClass = 'badge-engineer';
+  }
+
+  userRoleBadge.textContent = roleLabel;
+  userRoleBadge.className = `user-role-badge ${badgeClass}`;
+
+  userProfilePill.style.display = 'inline-flex';
+  btnOpenAuthModal.style.display = 'none';
+}
 
 // --- Tab Navigation ---
 function setupNavigation() {
