@@ -1,7 +1,7 @@
 """
 YantraWatch - Automated Supervisor Email Alert Notification Service
 Sends high-priority machine risk & failure probability alerts to factory supervisors.
-Supervisor emails are dynamically fetched from the PostgreSQL (Neon) database.
+Supervisor emails are dynamically fetched from the PostgreSQL (Neon) database and/or SUPERVISOR_EMAIL env.
 """
 
 import os
@@ -12,15 +12,24 @@ import asyncio
 import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from dotenv import load_dotenv
 from sqlalchemy import select
 
-# Load environment variables
-load_dotenv(os.path.join(os.path.dirname(__file__), "../../../.env"))
-load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
+# Load environment variables from all possible locations
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_root_env = os.path.normpath(os.path.join(_current_dir, "../../.env"))
+_backend_env = os.path.normpath(os.path.join(_current_dir, "../.env"))
+
+def reload_env():
+    if os.path.exists(_root_env):
+        load_dotenv(_root_env, override=True)
+    if os.path.exists(_backend_env):
+        load_dotenv(_backend_env, override=True)
+
+reload_env()
 
 # Import database session & models
 from backend.src.db.connection import AsyncSessionLocal
@@ -31,43 +40,86 @@ _ALERT_COOLDOWN_SECONDS = 1800  # 30-minute cooldown per machine to prevent spam
 _last_alert_times: Dict[int, float] = {}
 
 
-def get_smtp_config():
-    """Reads SMTP credentials from environment."""
+def get_smtp_config() -> Dict[str, Any]:
+    """Reads SMTP credentials from environment, stripping quotes and interior spaces."""
+    reload_env()
+    user = os.getenv("EMAIL", "").strip().strip('"').strip("'")
+    raw_password = os.getenv("MAIL_PASSWORD", "").strip().strip('"').strip("'")
+    # Clean spaces (e.g. Google displays App Passwords as "xxxx xxxx xxxx xxxx")
+    password = raw_password.replace(" ", "")
+    from_name = os.getenv("MAIL_FROM_NAME", "YantraWatch Plant Sentinel").strip().strip('"').strip("'")
+    host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip().strip('"').strip("'")
+    
+    try:
+        port = int(os.getenv("SMTP_PORT", "587"))
+    except ValueError:
+        port = 587
+
+    supervisor_email = os.getenv("SUPERVISOR_EMAIL", "").strip().strip('"').strip("'")
+    dev_mode = os.getenv("SMTP_DEV_MODE", "false").strip().lower() in ("true", "1", "yes")
+
     return {
-        "user": os.getenv("EMAIL", "").strip(),
-        "password": os.getenv("MAIL_PASSWORD", "").strip(),
-        "from_name": os.getenv("MAIL_FROM_NAME", "YantraWatch Plant Sentinel").strip(),
-        "host": os.getenv("SMTP_HOST", "smtp.gmail.com").strip(),
-        "port": int(os.getenv("SMTP_PORT", "587")),
+        "user": user,
+        "password": password,
+        "from_name": from_name,
+        "host": host,
+        "port": port,
+        "supervisor_email": supervisor_email,
+        "dev_mode": dev_mode,
     }
 
 
 async def get_supervisor_emails() -> List[str]:
     """
-    Fetches all active supervisor emails directly from the database.
-    Does not use environment variables for recipients.
+    Fetches all active supervisor emails.
+    Combines:
+    1. Active supervisor accounts in PostgreSQL database (Neon)
+    2. Explicit SUPERVISOR_EMAIL in .env
+    3. Fallback to sender EMAIL if no other recipients found.
     """
+    cfg = get_smtp_config()
+    emails = set()
+
+    # 1. Fetch from database
     try:
         async with AsyncSessionLocal() as session:
-            # Match role 'supervisor' case-insensitively
             result = await session.execute(
                 select(User.email).where(
                     User.role.ilike("supervisor"), User.is_active == True
                 )
             )
-            emails = [e for e in result.scalars().all() if e and "@" in e]
-            return list(set(emails))
+            for e in result.scalars().all():
+                if e and "@" in e:
+                    emails.add(e.strip().lower())
     except Exception as e:
         print(f"[!] EmailService: Error fetching supervisors from database: {e}")
-        return []
+
+    # 2. Fetch from SUPERVISOR_EMAIL environment variable
+    if cfg.get("supervisor_email"):
+        for part in cfg["supervisor_email"].split(","):
+            part = part.strip().lower()
+            if part and "@" in part:
+                emails.add(part)
+
+    # If external emails exist, filter out dummy demo domain (@yantrawatch.com)
+    # so Gmail doesn't encounter deliverability errors
+    real_emails = [e for e in emails if not e.endswith("@yantrawatch.com")]
+    final_emails = real_emails if real_emails else list(emails)
+
+    # 3. Fallback to sender if nothing found
+    if not final_emails and cfg.get("user") and "@" in cfg["user"]:
+        final_emails = [cfg["user"].lower()]
+
+    return final_emails
 
 
 def _send_email_sync(
     to_emails: List[str], subject: str, html_body: str, text_body: str
-) -> bool:
+) -> Tuple[bool, str]:
     """
     Synchronous SMTP sender with IPv4 enforcement, modern TLS context,
     and automatic port fallback (executed via asyncio.to_thread).
+    Returns (success: bool, message: str).
     """
     cfg = get_smtp_config()
     sender_email = cfg["user"]
@@ -76,20 +128,40 @@ def _send_email_sync(
     port = cfg["port"]
     from_name = cfg["from_name"]
 
-    if not sender_email or not password:
-        print(
-            "[!] EmailService: EMAIL or MAIL_PASSWORD missing in environment. Email not sent."
-        )
-        return False
+    if not sender_email:
+        msg = "EMAIL is missing in .env. Please configure sender email."
+        print(f"[!] EmailService: {msg}")
+        return False, msg
+
+    if not password:
+        msg = "MAIL_PASSWORD is missing in .env. Please configure SMTP password."
+        print(f"[!] EmailService: {msg}")
+        return False, msg
 
     if not to_emails:
-        print("[!] EmailService: No recipient supervisor emails provided.")
-        return False
+        msg = "No recipient supervisor emails provided or found in DB / SUPERVISOR_EMAIL."
+        print(f"[!] EmailService: {msg}")
+        return False, msg
 
-    # Check if password looks like a masked string (e.g. contains '...')
-    if "..." in password:
+    # Dev/Mock Mode: Save email to disk and simulate delivery without network
+    if cfg.get("dev_mode"):
+        try:
+            mock_dir = os.path.join(_current_dir, "../mock_emails")
+            os.makedirs(mock_dir, exist_ok=True)
+            filename = f"alert_{int(time.time())}.html"
+            filepath = os.path.join(mock_dir, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(html_body)
+            print(f"[DEV MODE] Alert email saved to {filepath} for preview.")
+            return True, f"[Dev Mode] Alert email preview saved to disk for {', '.join(to_emails)}"
+        except Exception as e:
+            print(f"[DEV MODE] Error writing preview file: {e}")
+            return True, f"[Dev Mode] Alert email simulated for {', '.join(to_emails)}"
+
+    # Warning if Google App Password length is abnormal
+    if "gmail.com" in host.lower() and len(password) != 16:
         print(
-            "[!] EmailService WARNING: 'MAIL_PASSWORD' appears masked ('...'). Use the unmasked 16-character App Password."
+            f"[!] EmailService WARNING: Google App Passwords must be 16 characters. Current length: {len(password)}. Password: '{password}'"
         )
 
     msg = MIMEMultipart("alternative")
@@ -100,15 +172,12 @@ def _send_email_sync(
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    # Force IPv4 socket resolution to prevent broken IPv6 route handshake drops
     orig_getaddrinfo = socket.getaddrinfo
 
     def getaddrinfo_ipv4(h, p, family=0, type=0, proto=0, flags=0):
         return orig_getaddrinfo(h, p, socket.AF_INET, type, proto, flags)
 
-    # Secure SSL context
     context = ssl.create_default_context()
-
     methods = (
         [(465, True), (587, False)] if port == 465 else [(port, False), (465, True)]
     )
@@ -126,11 +195,11 @@ def _send_email_sync(
 
                 if use_ssl:
                     server = smtplib.SMTP_SSL(
-                        host, target_port, timeout=20, context=context
+                        host, target_port, timeout=15, context=context
                     )
                     server.ehlo()
                 else:
-                    server = smtplib.SMTP(host, target_port, timeout=20)
+                    server = smtplib.SMTP(host, target_port, timeout=15)
                     server.ehlo()
                     server.starttls(context=context)
                     server.ehlo()
@@ -142,18 +211,28 @@ def _send_email_sync(
                 print(
                     f"[OK] EmailService: Successfully sent risk alert email to {to_emails}"
                 )
-                return True
+                return True, f"Successfully sent alert email to {', '.join(to_emails)}"
 
             except smtplib.SMTPAuthenticationError as auth_err:
-                print(
-                    f"[!] EmailService Authentication Error: Google rejected login for {sender_email}. (Code {auth_err.smtp_code}: {auth_err.smtp_error})"
-                )
-                print(
-                    "[!] Ensure 2FA is active and you're using a 16-character Google App Password without spaces."
-                )
-                return False
+                err_detail = f"Google rejected login for {sender_email} (Code {auth_err.smtp_code}: {auth_err.smtp_error})."
+                if len(password) != 16:
+                    err_detail += f" MAIL_PASSWORD has {len(password)} characters (Google App Passwords are 16 characters: 4 groups of 4)."
+                else:
+                    err_detail += " Verify 2-Step Verification is active and App Password is valid."
+                print(f"[!] EmailService Authentication Error: {err_detail}")
+                return False, err_detail
+
+            except smtplib.SMTPServerDisconnected as disc_err:
+                err_detail = "SMTP server closed connection unexpectedly."
+                if len(password) != 16:
+                    err_detail += f" Google rejected credentials because MAIL_PASSWORD has {len(password)} characters (Google App Passwords are 16 characters)."
+                else:
+                    err_detail += " Check Google App Password validity and network connectivity."
+                last_error = err_detail
+                print(f"[-] EmailService: Failed on port {target_port}: {err_detail}. Trying alternate...")
+
             except Exception as e:
-                last_error = e
+                last_error = str(e)
                 print(
                     f"[-] EmailService: Failed on port {target_port}: {e}. Trying alternate port..."
                 )
@@ -161,15 +240,14 @@ def _send_email_sync(
     finally:
         socket.getaddrinfo = orig_getaddrinfo
 
-    print(
-        f"[!] EmailService: All SMTP connection attempts failed. Last error: {last_error}"
-    )
-    return False
+    final_err = f"SMTP transmission failed: {last_error}"
+    print(f"[!] EmailService: {final_err}")
+    return False, final_err
 
 
 async def send_email_async(
     to_emails: List[str], subject: str, html_body: str, text_body: str
-) -> bool:
+) -> Tuple[bool, str]:
     """Non-blocking asynchronous wrapper for sending emails."""
     return await asyncio.to_thread(
         _send_email_sync, to_emails, subject, html_body, text_body
@@ -219,7 +297,6 @@ def build_machine_alert_html(
         .header h1 {{ margin: 0; font-size: 20px; color: #ffffff; letter-spacing: -0.5px; }}
         .header p {{ margin: 4px 0 0; color: #fecaca; font-size: 13px; }}
         .content {{ padding: 24px; }}
-        .metric-grid {{ display: flex; gap: 12px; margin-bottom: 20px; }}
         .kpi-box {{ flex: 1; background: #1a2236; border: 1px solid #2d3748; padding: 14px; border-radius: 8px; text-align: center; }}
         .kpi-label {{ font-size: 11px; text-transform: uppercase; color: #a0aec0; letter-spacing: 0.5px; }}
         .kpi-val {{ font-size: 20px; font-weight: bold; margin-top: 4px; font-family: monospace; }}
@@ -229,7 +306,6 @@ def build_machine_alert_html(
         .telemetry-table {{ width: 100%; border-collapse: collapse; margin-top: 12px; background: #1a2236; border-radius: 8px; overflow: hidden; }}
         .telemetry-table th {{ background: #232d45; color: #a0aec0; font-size: 11px; text-transform: uppercase; padding: 8px 12px; text-align: left; }}
         .telemetry-table td {{ padding: 8px 12px; font-size: 13px; border-bottom: 1px solid #2d3748; }}
-        .action-btn {{ display: inline-block; background: #0284c7; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; font-size: 14px; margin-top: 20px; }}
         .footer {{ padding: 16px 24px; background: #0c1220; border-top: 1px solid #232d45; font-size: 12px; color: #718096; text-align: center; }}
       </style>
     </head>
@@ -237,9 +313,7 @@ def build_machine_alert_html(
       <div class="card">
         <div class="header">
           <h1>🚨 High Breakdown Risk Alert: Machine #{m_id}</h1>
-          <p>YantraWatch Autonomous Sentinel detected critical predictive failure symptoms at {
-        time_str
-    }</p>
+          <p>YantraWatch Autonomous Sentinel detected critical predictive failure symptoms at {time_str}</p>
         </div>
 
         <div class="content">
@@ -264,11 +338,7 @@ def build_machine_alert_html(
             Unit Profile & Telemetry Readouts
           </h3>
           <p style="font-size: 13px; color: #94a3b8; margin: 4px 0 12px;">
-            Machine Model: <strong>{model}</strong> | Equipment Age: <strong>{
-        age
-    } years</strong> | Alert Status: <span style="color: #f87171; font-weight: bold;">{
-        status
-    }</span>
+            Machine Model: <strong>{model}</strong> | Equipment Age: <strong>{age} years</strong> | Alert Status: <span style="color: #f87171; font-weight: bold;">{status}</span>
           </p>
 
           <table class="telemetry-table">
@@ -282,24 +352,15 @@ def build_machine_alert_html(
             </thead>
             <tbody>
               <tr>
-                <td style="font-family: monospace; color: #e2e8f0;">{
-        telemetry.get("volt", "N/A")
-    } V</td>
-                <td style="font-family: monospace; color: #e2e8f0;">{
-        telemetry.get("rotate", "N/A")
-    } rpm</td>
-                <td style="font-family: monospace; color: #e2e8f0;">{
-        telemetry.get("pressure", "N/A")
-    } psi</td>
-                <td style="font-family: monospace; color: #f87171; font-weight: bold;">{
-        telemetry.get("vibration", "N/A")
-    } mm/s</td>
+                <td style="font-family: monospace; color: #e2e8f0;">{telemetry.get('volt', 'N/A')} V</td>
+                <td style="font-family: monospace; color: #e2e8f0;">{telemetry.get('rotate', 'N/A')} rpm</td>
+                <td style="font-family: monospace; color: #e2e8f0;">{telemetry.get('pressure', 'N/A')} psi</td>
+                <td style="font-family: monospace; color: #f87171; font-weight: bold;">{telemetry.get('vibration', 'N/A')} mm/s</td>
               </tr>
             </tbody>
           </table>
 
-          {
-        f'''
+          {f'''
           <h3 style="font-size: 14px; text-transform: uppercase; color: #cbd5e1; margin-top: 20px; margin-bottom: 8px; border-bottom: 1px solid #2d3748; padding-bottom: 4px;">
             Top Contributing Failure Drivers (TreeSHAP)
           </h3>
@@ -315,16 +376,11 @@ def build_machine_alert_html(
               {factors_html}
             </tbody>
           </table>
-          '''
-        if factors_html
-        else ""
-    }
+          ''' if factors_html else ""}
 
           <div style="text-align: center; margin-top: 24px;">
             <p style="font-size: 13px; color: #94a3b8; margin-bottom: 12px;">
-              Immediate corrective action is required within the {
-        sla_hours
-    }-hour SLA to avoid estimated unplanned downtime loss.
+              Immediate corrective action is required within the {sla_hours}-hour SLA to avoid estimated unplanned downtime loss.
             </p>
           </div>
         </div>
@@ -361,7 +417,7 @@ async def notify_supervisors_on_machine_risk(
     machine: Dict[str, Any], current_time: Optional[str] = None, force: bool = False
 ) -> Dict[str, Any]:
     """
-    Evaluates machine risk and sends email to any supervisor registered in the database.
+    Evaluates machine risk and sends email to any supervisor registered in the database or env.
     Applies cooldown tracking unless force=True.
     """
     m_id = machine.get("machine_id")
@@ -381,13 +437,16 @@ async def notify_supervisors_on_machine_risk(
             "reason": f"Alert on cooldown for machine #{m_id} (sent {int(now - last_sent)}s ago)",
         }
 
-    # Fetch supervisor emails directly from Neon database
+    # Fetch supervisor emails dynamically
     supervisor_emails = await get_supervisor_emails()
     if not supervisor_emails:
         print(
-            "[!] EmailService: No active supervisors found in the database. Skipping notification."
+            "[!] EmailService: No active supervisors found in database or SUPERVISOR_EMAIL. Skipping notification."
         )
-        return {"sent": False, "reason": "No supervisors found in database"}
+        return {
+            "sent": False,
+            "reason": "No supervisor email addresses found in DB or environment (SUPERVISOR_EMAIL)",
+        }
 
     # Update cooldown timestamp
     _last_alert_times[m_id] = now
@@ -396,10 +455,11 @@ async def notify_supervisors_on_machine_risk(
     html_body = build_machine_alert_html(machine, current_time)
     text_body = build_machine_alert_text(machine, current_time)
 
-    success = await send_email_async(supervisor_emails, subject, html_body, text_body)
+    success, reason = await send_email_async(supervisor_emails, subject, html_body, text_body)
     return {
         "sent": success,
         "recipients": supervisor_emails,
         "machine_id": m_id,
         "risk_score": risk_score,
+        "reason": reason,
     }
