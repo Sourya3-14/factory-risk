@@ -155,11 +155,18 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   type="button"
                   className="ctrl-btn"
-                  style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', marginLeft: '0.35rem' }}
+                  style={{
+                    fontSize: '0.72rem',
+                    padding: '0.25rem 0.65rem',
+                    marginLeft: '0.4rem',
+                    borderRadius: 'var(--radius-full)',
+                    background: 'rgba(255, 255, 255, 0.06)',
+                    borderColor: 'rgba(255, 255, 255, 0.15)'
+                  }}
                   onClick={() => setIsAuthModalOpen(true)}
                   title="Switch Role or Account"
                 >
-                  Switch
+                  Switch Role
                 </button>
                 <button
                   type="button"
