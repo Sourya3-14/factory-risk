@@ -9,6 +9,9 @@ import os
 import json
 import base64
 from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 try:
     from google import genai
@@ -106,20 +109,21 @@ def explain_machine_risk(
     downtime_hours: float,
     telemetry: Dict[str, float],
     top_factors: list,
-    photo_base64: Optional[str] = None
+    photo_base64: Optional[str] = None,
+    api_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """Calls Gemma 4 via Google GenAI or falls back gracefully."""
-    api_key = os.environ.get("GEMINI_API_KEY")
+    active_key = api_key or os.environ.get("GEMINI_API_KEY")
     has_photo = bool(photo_base64)
 
-    if not api_key or not GENAI_AVAILABLE:
+    if not active_key or not GENAI_AVAILABLE:
         return generate_fallback_explanation(
             machine_id, model_name, age, risk_score, alert_status,
             expected_loss_inr, hourly_cost_inr, downtime_hours, top_factors, has_photo
         )
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=active_key)
         
         prompt = f"""
 You are the AI Chief Maintenance Engineer at an industrial manufacturing plant.

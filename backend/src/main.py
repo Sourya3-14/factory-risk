@@ -65,6 +65,7 @@ class ExplainRequest(BaseModel):
     telemetry: Dict[str, float]
     top_factors: list
     photo_base64: Optional[str] = None
+    api_key: Optional[str] = None
 
 class CreateTaskRequest(BaseModel):
     machine_id: int
@@ -122,7 +123,8 @@ def get_gemma_explanation(req: ExplainRequest):
         downtime_hours=req.downtime_hours,
         telemetry=req.telemetry,
         top_factors=req.top_factors,
-        photo_base64=req.photo_base64
+        photo_base64=req.photo_base64,
+        api_key=req.api_key
     )
 
 @app.get("/api/tasks")

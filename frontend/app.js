@@ -50,6 +50,7 @@ const photoInput = document.getElementById('photoInput');
 const dropPrompt = document.getElementById('dropPrompt');
 const imagePreview = document.getElementById('imagePreview');
 const btnRemovePhoto = document.getElementById('btnRemovePhoto');
+const geminiApiKeyInput = document.getElementById('geminiApiKeyInput');
 
 // Kanban Elements
 const actionTypeSelect = document.getElementById('actionTypeSelect');
@@ -66,6 +67,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
   setupPhotoDropzone();
   setupControls();
+
+  if (geminiApiKeyInput) {
+    const savedKey = localStorage.getItem('gemini_api_key') || '';
+    geminiApiKeyInput.value = savedKey;
+    geminiApiKeyInput.addEventListener('change', (e) => {
+      localStorage.setItem('gemini_api_key', e.target.value.trim());
+    });
+  }
+
   await loadStreamIndex();
   await loadMetrics();
   await loadTasks();
@@ -385,6 +395,7 @@ btnRunGemma.addEventListener('click', async () => {
   `;
 
   try {
+    const userKey = geminiApiKeyInput ? geminiApiKeyInput.value.trim() : null;
     const payload = {
       machine_id: selectedMachine.machine_id,
       model_name: selectedMachine.model,
@@ -396,7 +407,8 @@ btnRunGemma.addEventListener('click', async () => {
       downtime_hours: selectedMachine.downtime_hours,
       telemetry: selectedMachine.telemetry,
       top_factors: selectedMachine.top_factors,
-      photo_base64: uploadedPhotoBase64
+      photo_base64: uploadedPhotoBase64,
+      api_key: userKey || undefined
     };
 
     const res = await fetch('/api/explain', {
