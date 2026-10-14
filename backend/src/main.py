@@ -42,7 +42,7 @@ def load_cached_data():
         print(f"[*] Loading replay stream cache from {stream_path}...")
         with open(stream_path, "r", encoding="utf-8") as f:
             STREAM_DATA = json.load(f)
-        print(f"[✓] Replay stream loaded ({len(STREAM_DATA)} timestamps)")
+        print(f"[OK] Replay stream loaded ({len(STREAM_DATA)} timestamps)")
 
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
@@ -150,7 +150,9 @@ def complete_task(task_id: str, req: CompleteTaskRequest):
 def sync_clock(req: ClockSyncRequest):
     return escalation_mgr.sync_simulated_clock(req.current_simulated_time)
 
-# Mount frontend directory for static serving
-FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend"))
+# Mount frontend directory for static serving (prefer built dist directory if available)
+DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist"))
+FRONTEND_DIR = DIST_DIR if os.path.exists(DIST_DIR) else os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend"))
 os.makedirs(FRONTEND_DIR, exist_ok=True)
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+
