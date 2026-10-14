@@ -28,7 +28,13 @@ def reload_env():
     if os.path.exists(_root_env):
         load_dotenv(_root_env, override=True)
     if os.path.exists(_backend_env):
-        load_dotenv(_backend_env, override=True)
+        try:
+            from dotenv import dotenv_values
+            for k, v in dotenv_values(_backend_env).items():
+                if v and v.strip():
+                    os.environ[k] = v.strip()
+        except Exception:
+            load_dotenv(_backend_env, override=False)
 
 reload_env()
 
@@ -259,9 +265,21 @@ async def _send_resend_email(
     if not api_key:
         return False, "RESEND_API_KEY is not set in environment or .env."
 
+    # Normalize from_email if missing angle brackets
+    if "<" not in from_email and "@" in from_email:
+        parts = from_email.split()
+        if len(parts) > 1 and "@" in parts[-1]:
+            name = " ".join(parts[:-1])
+            addr = parts[-1]
+            from_email = f"{name} <{addr}>"
+
+    # Prioritize SUPERVISOR_EMAIL if configured
+    supervisor_target = os.getenv("SUPERVISOR_EMAIL", "").strip().strip('"').strip("'")
+    recipients = [supervisor_target] if supervisor_target and "@" in supervisor_target else to_emails
+
     payload = {
         "from": from_email,
-        "to": to_emails,
+        "to": recipients,
         "subject": subject,
         "html": html_body,
         "text": text_body,
@@ -280,14 +298,29 @@ async def _send_resend_email(
             if resp.status_code in (200, 201):
                 data = resp.json()
                 email_id = data.get("id", "N/A")
-                print(f"[OK] EmailService: Sent via Resend API (ID: {email_id}) to {to_emails}")
-                return True, f"Alert email delivered via Resend (ID: {email_id}) to {', '.join(to_emails)}"
+                print(f"[OK] EmailService: Sent via Resend API (ID: {email_id}) to {recipients}")
+                return True, f"Alert email delivered via Resend (ID: {email_id}) to {', '.join(recipients)}"
             else:
                 try:
                     err_json = resp.json()
                     err_msg = err_json.get("message", resp.text)
                 except Exception:
                     err_msg = resp.text
+
+                # Handle Resend sandbox restriction (free tier only sends to account owner)
+                import re
+                match = re.search(r"only send testing emails to your own email address \(([^)]+@[^)]+)\)", err_msg)
+                if match:
+                    allowed_email = match.group(1).strip()
+                    print(f"[*] Resend Sandbox: Re-routing delivery to your verified Resend account: {allowed_email}")
+                    payload["to"] = [allowed_email]
+                    retry_resp = await client.post("https://api.resend.com/emails", json=payload, headers=headers)
+                    if retry_resp.status_code in (200, 201):
+                        data = retry_resp.json()
+                        email_id = data.get("id", "N/A")
+                        print(f"[OK] EmailService: Sent via Resend API (ID: {email_id}) to {allowed_email}")
+                        return True, f"Alert email delivered via Resend to {allowed_email} (Sandbox Account Owner)"
+
                 print(f"[!] EmailService: Resend API error ({resp.status_code}): {err_msg}")
                 return False, f"Resend API error ({resp.status_code}): {err_msg}"
     except Exception as e:
