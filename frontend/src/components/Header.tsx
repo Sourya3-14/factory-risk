@@ -10,6 +10,7 @@ interface HeaderProps {
   activeCriticalCount: number;
   totalLossSaved: number;
   activeTasksCount: number;
+  onOpenShiftBriefing?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -19,7 +20,9 @@ export const Header: React.FC<HeaderProps> = ({
   activeCriticalCount,
   totalLossSaved,
   activeTasksCount,
+  onOpenShiftBriefing,
 }) => {
+
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
@@ -141,8 +144,32 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
+          {/* Autonomous Shift Briefing Trigger */}
+          <button
+            type="button"
+            className="ctrl-btn"
+            style={{
+              background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.15), rgba(2, 132, 199, 0.25))',
+              border: '1px solid rgba(6, 182, 212, 0.4)',
+              color: '#fff',
+              fontWeight: 600,
+              fontSize: '0.8rem',
+              padding: '0.5rem 0.9rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              cursor: 'pointer',
+            }}
+            onClick={onOpenShiftBriefing}
+            title="Generate AI Executive Shift Handover Briefing"
+          >
+            <span style={{ color: 'var(--accent-cyan)' }}>✨</span>
+            Shift Briefing
+          </button>
+
           {/* User Profile & Role Switcher Section */}
           <div className="user-auth-section">
+
             {currentUser ? (
               <div className="user-profile-pill">
                 <div className="user-avatar">{initials}</div>

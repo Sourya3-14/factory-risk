@@ -12,7 +12,12 @@ import type {
   ExplainResponse,
   TaskItem,
   CreateTaskPayload,
+  CopilotPayload,
+  CopilotResponse,
+  ShiftHandoverPayload,
+  ShiftHandoverBriefing,
 } from './types';
+
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
@@ -111,3 +116,34 @@ export async function syncClockTasks(currentSimulatedTime: string): Promise<Task
     body: JSON.stringify({ current_simulated_time: currentSimulatedTime }),
   });
 }
+
+export async function notifySupervisor(machineId: number, currentSimulatedTime?: string, force = true): Promise<any> {
+  return request('/api/alerts/notify-supervisor', {
+    method: 'POST',
+    body: JSON.stringify({
+      machine_id: machineId,
+      current_simulated_time: currentSimulatedTime,
+      force,
+    }),
+  });
+}
+
+export async function fetchSupervisors(): Promise<{ supervisors: string[]; count: number }> {
+  return request('/api/alerts/supervisors');
+}
+
+export async function askMaintenanceCopilot(payload: CopilotPayload): Promise<CopilotResponse> {
+  return request<CopilotResponse>('/api/gemma/copilot', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchShiftBriefing(payload: ShiftHandoverPayload): Promise<ShiftHandoverBriefing> {
+  return request<ShiftHandoverBriefing>('/api/gemma/shift-handover', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+

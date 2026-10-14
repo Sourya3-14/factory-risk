@@ -80,12 +80,93 @@ export interface ExplainRequest {
   photo_base64?: string | null;
 }
 
+export interface VisualTriage {
+  detected_component: string;
+  defect_class: string;
+  defect_severity: string;
+  recommended_tools: string[];
+}
+
 export interface ExplainResponse {
   source?: string;
   summary: string;
   root_causes: string[];
   recommended_actions: string[];
   photo_observation?: string | null;
+  visual_triage?: VisualTriage;
+}
+
+export interface CopilotMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  suggested_followups?: string[];
+  safety_warning?: string | null;
+}
+
+export interface CopilotPayload {
+  machine_id: number;
+  question: string;
+  model_name?: string;
+  age?: number;
+  risk_score?: number;
+  expected_loss_inr?: number;
+  sla_hours?: number;
+  telemetry?: Telemetry;
+  top_factors?: ShapFactor[];
+  chat_history?: { role: string; text: string }[];
+}
+
+export interface CopilotResponse {
+  reply: string;
+  suggested_followups: string[];
+  safety_warning?: string | null;
+  source?: string;
+}
+
+export interface ShiftBriefingPriority {
+  machine_id: number;
+  model?: string;
+  expected_loss?: string;
+  primary_issue: string;
+  directive: string;
+}
+
+export interface ShiftBriefingEscalation {
+  task_id: string;
+  machine_id?: number;
+  level: string;
+  assigned_role: string;
+  overdue_hours: number;
+  action: string;
+}
+
+export interface ShiftHandoverBriefing {
+  executive_headline: string;
+  shift_status: string;
+  timestamp: string;
+  kpis: {
+    critical_units: number;
+    warning_units: number;
+    total_loss_at_risk: string;
+    cumulative_savings: string;
+    escalated_tasks: number;
+  };
+  critical_priorities: ShiftBriefingPriority[];
+  sla_escalations: ShiftBriefingEscalation[];
+  shift_directive: string;
+  source?: string;
+}
+
+export interface ShiftHandoverPayload {
+  current_simulated_time: string;
+  total_units?: number;
+  critical_count?: number;
+  warning_count?: number;
+  total_loss_inr?: number;
+  total_mitigated_inr?: number;
+  critical_machines?: any[];
+  active_tasks?: any[];
+  escalated_tasks?: any[];
 }
 
 export interface MetricsData {
@@ -101,3 +182,4 @@ export interface MetricsData {
 
 export type ActiveTab = 'fleet' | 'kanban' | 'benchmark';
 export type FilterType = 'all' | 'CRITICAL' | 'WARNING' | 'NORMAL';
+

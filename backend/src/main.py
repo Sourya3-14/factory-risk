@@ -6,19 +6,26 @@ and the ₹-weighted escalation Kanban engine. Serves the custom frontend.
 
 import os
 import json
-from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Body
+from typing import Optional, Dict, Any, List
+from fastapi import FastAPI, HTTPException, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from backend.src.gemma_explainer import explain_machine_risk
+from backend.src.gemma_explainer import (
+    explain_machine_risk,
+    chat_maintenance_copilot,
+    generate_shift_handover_briefing,
+)
+
 from backend.src.escalation_engine import EscalationManager
 from backend.src.db.connection import init_db
 from backend.src.auth.router import router as auth_router, seed_demo_users
 from backend.src.db.connection import AsyncSessionLocal
+from backend.src.email_service import notify_supervisors_on_machine_risk, get_supervisor_emails
 
 app = FastAPI(title="YantraWatch API", version="1.0.0")
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -99,7 +106,36 @@ class CompleteTaskRequest(BaseModel):
 class ClockSyncRequest(BaseModel):
     current_simulated_time: str
 
+class AlertSupervisorRequest(BaseModel):
+    machine_id: int
+    current_simulated_time: Optional[str] = None
+    force: bool = False
+
+class CopilotRequest(BaseModel):
+    machine_id: int
+    question: str
+    model_name: Optional[str] = "model1"
+    age: Optional[int] = 5
+    risk_score: Optional[float] = 0.5
+    expected_loss_inr: Optional[int] = 50000
+    sla_hours: Optional[int] = 4
+    telemetry: Optional[Dict[str, float]] = None
+    top_factors: Optional[list] = None
+    chat_history: Optional[List[Dict[str, str]]] = None
+
+class ShiftHandoverRequest(BaseModel):
+    current_simulated_time: str
+    total_units: Optional[int] = 25
+    critical_count: Optional[int] = 0
+    warning_count: Optional[int] = 0
+    total_loss_inr: Optional[int] = 0
+    total_mitigated_inr: Optional[int] = 0
+    critical_machines: Optional[List[Dict[str, Any]]] = None
+    active_tasks: Optional[List[Dict[str, Any]]] = None
+    escalated_tasks: Optional[List[Dict[str, Any]]] = None
+
 # Endpoints
+
 @app.get("/api/health")
 def health_check():
     return {
@@ -117,14 +153,60 @@ def get_stream_index():
     return STREAM_INDEX
 
 @app.get("/api/stream/tick/{timestamp}")
-def get_stream_tick(timestamp: str):
+async def get_stream_tick(timestamp: str, background_tasks: BackgroundTasks):
     if timestamp not in STREAM_DATA:
         # Try finding closest match or error
         raise HTTPException(status_code=404, detail=f"Timestamp {timestamp} not found in precomputed stream.")
+    
+    machines = STREAM_DATA[timestamp]
+
+    # Automatically check if any machine generates critical failure probability and notify supervisors
+    for m in machines:
+        if m.get("alert_status") == "CRITICAL" or m.get("risk_score", 0) >= 0.80:
+            background_tasks.add_task(notify_supervisors_on_machine_risk, m, timestamp, False)
+
     return {
         "timestamp": timestamp,
-        "machines": STREAM_DATA[timestamp]
+        "machines": machines
     }
+
+@app.post("/api/alerts/notify-supervisor")
+async def trigger_supervisor_alert(req: AlertSupervisorRequest):
+    """
+    Manually or programmatically triggers an email alert to all supervisors in the database.
+    """
+    target_machine = None
+    timestamp = req.current_simulated_time
+
+    if timestamp and timestamp in STREAM_DATA:
+        for m in STREAM_DATA[timestamp]:
+            if m["machine_id"] == req.machine_id:
+                target_machine = m
+                break
+
+    if not target_machine:
+        # Fallback to finding the machine in the loaded stream
+        for ts, machines in reversed(list(STREAM_DATA.items())):
+            for m in machines:
+                if m["machine_id"] == req.machine_id:
+                    target_machine = m
+                    timestamp = ts
+                    break
+            if target_machine:
+                break
+
+    if not target_machine:
+        raise HTTPException(status_code=404, detail=f"Machine {req.machine_id} not found.")
+
+    res = await notify_supervisors_on_machine_risk(target_machine, timestamp, force=req.force)
+    return res
+
+@app.get("/api/alerts/supervisors")
+async def get_active_supervisors():
+    """Returns the list of supervisor email recipients fetched from the database."""
+    emails = await get_supervisor_emails()
+    return {"supervisors": emails, "count": len(emails)}
+
 
 @app.post("/api/explain")
 def get_gemma_explanation(req: ExplainRequest):
@@ -142,6 +224,36 @@ def get_gemma_explanation(req: ExplainRequest):
         photo_base64=req.photo_base64,
         # api_key=req.api_key
     )
+
+@app.post("/api/gemma/copilot")
+def copilot_chat_endpoint(req: CopilotRequest):
+    machine_context = {
+        "machine_id": req.machine_id,
+        "model": req.model_name,
+        "age": req.age,
+        "risk_score": req.risk_score,
+        "expected_loss_inr": req.expected_loss_inr,
+        "sla_hours": req.sla_hours,
+        "telemetry": req.telemetry or {},
+        "top_factors": req.top_factors or [],
+    }
+    return chat_maintenance_copilot(machine_context, req.question, req.chat_history)
+
+@app.post("/api/gemma/shift-handover")
+def shift_handover_endpoint(req: ShiftHandoverRequest):
+    summary_data = {
+        "current_simulated_time": req.current_simulated_time,
+        "total_units": req.total_units,
+        "critical_count": req.critical_count,
+        "warning_count": req.warning_count,
+        "total_loss_inr": req.total_loss_inr,
+        "total_mitigated_inr": req.total_mitigated_inr,
+        "critical_machines": req.critical_machines or [],
+        "active_tasks": req.active_tasks or [],
+        "escalated_tasks": req.escalated_tasks or [],
+    }
+    return generate_shift_handover_briefing(summary_data)
+
 
 @app.get("/api/tasks")
 def list_tasks():

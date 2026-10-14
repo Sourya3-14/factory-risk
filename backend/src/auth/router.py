@@ -220,6 +220,14 @@ async def seed_demo_users(db: AsyncSession = Depends(get_db_session)):
             "phone_number": "+91 98765 43211"
         },
         {
+            "email": "kimi.no.namae.wa.2000@gmail.com",
+            "password": "password123",
+            "full_name": "Plant Supervisor",
+            "role": "supervisor",
+            "factory_name": "Yantra Unit 1",
+            "phone_number": "+91 98765 00000"
+        },
+        {
             "email": "owner@yantrawatch.com",
             "password": "password123",
             "full_name": "Vikram Singhania",
@@ -228,6 +236,7 @@ async def seed_demo_users(db: AsyncSession = Depends(get_db_session)):
             "phone_number": "+91 98765 43212"
         }
     ]
+
 
     created = []
     for acc in demo_accounts:

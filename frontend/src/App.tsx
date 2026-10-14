@@ -6,6 +6,7 @@ import type {
   MetricsData,
   ActiveTab,
   FilterType,
+  ShiftHandoverBriefing,
 } from './types';
 import {
   fetchStreamIndex,
@@ -15,6 +16,8 @@ import {
   createTask,
   completeTask,
   syncClockTasks,
+  fetchShiftBriefing,
+  notifySupervisor,
 } from './api';
 import { Header } from './components/Header';
 import { ClockBanner } from './components/ClockBanner';
@@ -22,6 +25,8 @@ import { FleetMatrix } from './components/FleetMatrix';
 import { AlertModal } from './components/AlertModal';
 import { KanbanView } from './components/KanbanView';
 import { BenchmarkView } from './components/BenchmarkView';
+import { ShiftBriefingModal } from './components/ShiftBriefingModal';
+
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('fleet');
@@ -36,7 +41,13 @@ export function App() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
 
+  // Shift Handover Briefing State (Feature 2)
+  const [isShiftBriefingOpen, setIsShiftBriefingOpen] = useState(false);
+  const [shiftBriefing, setShiftBriefing] = useState<ShiftHandoverBriefing | null>(null);
+  const [isBriefingLoading, setIsBriefingLoading] = useState(false);
+
   const playTimerRef = useRef<number | null>(null);
+
 
   // Load initial data
   useEffect(() => {
@@ -184,10 +195,54 @@ export function App() {
 
   const activeTasksCount = tasks.filter((t) => t.status !== 'COMPLETED').length;
 
+  // Shift Handover Briefing Handlers (Feature 2)
+  const loadShiftBriefing = useCallback(async () => {
+    setIsBriefingLoading(true);
+    const currentSimTime = streamIndex[currentTickIndex]?.timestamp || '2015-09-01 06:00:00';
+    const criticals = currentMachines.filter((m) => m.alert_status === 'CRITICAL');
+    const warnings = currentMachines.filter((m) => m.alert_status === 'WARNING');
+    const escalated = tasks.filter((t) => t.status === 'ESCALATED');
+    const active = tasks.filter((t) => t.status !== 'COMPLETED');
+
+    try {
+      const res = await fetchShiftBriefing({
+        current_simulated_time: currentSimTime,
+        total_units: currentMachines.length || 25,
+        critical_count: criticals.length,
+        warning_count: warnings.length,
+        total_loss_inr: totalRiskLoss,
+        total_mitigated_inr: totalLossSaved,
+        critical_machines: criticals,
+        active_tasks: active,
+        escalated_tasks: escalated,
+      });
+      setShiftBriefing(res);
+    } catch (err) {
+      console.error('Error fetching shift briefing:', err);
+    } finally {
+      setIsBriefingLoading(false);
+    }
+  }, [streamIndex, currentTickIndex, currentMachines, tasks, totalRiskLoss, totalLossSaved]);
+
+  const handleOpenShiftBriefing = () => {
+    setIsShiftBriefingOpen(true);
+    loadShiftBriefing();
+  };
+
+  const handleEmailShiftBriefing = async () => {
+    const critMachineId =
+      currentMachines.find((m) => m.alert_status === 'CRITICAL')?.machine_id ||
+      currentMachines[0]?.machine_id ||
+      1;
+    await notifySupervisor(critMachineId, streamIndex[currentTickIndex]?.timestamp, true);
+  };
+
   const currentTimestamp = streamIndex[currentTickIndex]?.timestamp || '2015-09-01 00:00:00';
 
   return (
     <div>
+
+
       <Header
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -195,6 +250,7 @@ export function App() {
         activeCriticalCount={activeCriticalCount}
         totalLossSaved={totalLossSaved}
         activeTasksCount={activeTasksCount}
+        onOpenShiftBriefing={handleOpenShiftBriefing}
       />
 
       <ClockBanner
@@ -232,8 +288,18 @@ export function App() {
         currentSimulatedTime={currentTimestamp}
         onAssignTask={handleAssignTask}
       />
+
+      <ShiftBriefingModal
+        isOpen={isShiftBriefingOpen}
+        onClose={() => setIsShiftBriefingOpen(false)}
+        briefing={shiftBriefing}
+        isLoading={isBriefingLoading}
+        onRefresh={loadShiftBriefing}
+        onEmailSupervisors={handleEmailShiftBriefing}
+      />
     </div>
   );
 }
 
 export default App;
+
