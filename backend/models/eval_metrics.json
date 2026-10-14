@@ -1,0 +1,66 @@
+{
+  "model_type": "LightGBM Classifier",
+  "optimal_threshold": 0.5800000000000001,
+  "test_period": "2015-09-01 to 2015-12-31",
+  "test_failures_count": 239,
+  "lightgbm_metrics": {
+    "precision": 0.9666,
+    "recall": 0.9956,
+    "f1_score": 0.9809,
+    "roc_auc": 0.9999
+  },
+  "baseline_vibration_metrics": {
+    "precision": 0.1104,
+    "recall": 0.2696,
+    "f1_score": 0.1566
+  },
+  "lead_time_metrics": {
+    "failures_detected": 239,
+    "total_failures": 239,
+    "detection_rate": 1.0,
+    "mean_lead_time_hours": 21.43,
+    "median_lead_time_hours": 21.0
+  },
+  "top_features": [
+    {
+      "feature": "hours_since_comp2_maint",
+      "importance": 510
+    },
+    {
+      "feature": "hours_since_comp1_maint",
+      "importance": 502
+    },
+    {
+      "feature": "hours_since_comp4_maint",
+      "importance": 449
+    },
+    {
+      "feature": "hours_since_comp3_maint",
+      "importance": 445
+    },
+    {
+      "feature": "rotate_mean_24h",
+      "importance": 307
+    },
+    {
+      "feature": "volt_mean_24h",
+      "importance": 296
+    },
+    {
+      "feature": "vibration_mean_24h",
+      "importance": 282
+    },
+    {
+      "feature": "pressure_mean_24h",
+      "importance": 243
+    },
+    {
+      "feature": "pressure_mean_3h",
+      "importance": 117
+    },
+    {
+      "feature": "age",
+      "importance": 114
+    }
+  ]
+}

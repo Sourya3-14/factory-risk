@@ -1,0 +1,50 @@
+# RiskLoop / FactoryGuard Configuration
+# All financial values in Indian Rupees (₹)
+
+currency: "INR"
+currency_symbol: "₹"
+
+# Cost of unplanned downtime per hour by machine model
+downtime_cost_per_hour:
+  model1: 12000
+  model2: 18000
+  model3: 25000
+  model4: 35000
+
+# Estimated unplanned downtime duration in hours by failure component
+downtime_hours_by_component:
+  comp1: 6
+  comp2: 8
+  comp3: 5
+  comp4: 10
+  default: 8
+
+# Corrective action mitigation factors (risk reduction multiplier)
+mitigation_factors:
+  lubricate_and_cool: 0.50          # Reduces P(failure) by 50%
+  replace_worn_component: 0.85      # Reduces P(failure) by 85%
+  tighten_electrical_leads: 0.60    # Reduces P(failure) by 60%
+  calibrate_pressure_valve: 0.70    # Reduces P(failure) by 70%
+  inspect_and_clean: 0.40           # Reduces P(failure) by 40%
+
+# Rupee-weighted escalation rules & SLA deadlines (hours to complete)
+escalation_rules:
+  critical_loss_threshold: 150000   # > ₹1,50,000
+  critical_sla_hours: 2
+  high_loss_threshold: 75000        # > ₹75,000
+  high_sla_hours: 4
+  medium_loss_threshold: 30000      # > ₹30,000
+  medium_sla_hours: 8
+  standard_sla_hours: 16
+
+# Escalation hierarchy
+escalation_levels:
+  level_1:
+    role: "Maintenance Technician"
+    grace_hours: 0
+  level_2:
+    role: "Shift Supervisor"
+    grace_hours: 1
+  level_3:
+    role: "Plant Operations Manager"
+    grace_hours: 3
