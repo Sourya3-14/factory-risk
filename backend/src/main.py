@@ -160,14 +160,17 @@ async def get_stream_tick(timestamp: str, background_tasks: BackgroundTasks):
     
     machines = STREAM_DATA[timestamp]
 
-    # Automatically check if any machine generates critical failure probability and notify supervisors
+    # Automatically check if any machine generates critical failure probability and notify 1st supervisor
+    auto_notified_machines = []
     for m in machines:
         if m.get("alert_status") == "CRITICAL" or m.get("risk_score", 0) >= 0.80:
             background_tasks.add_task(notify_supervisors_on_machine_risk, m, timestamp, False)
+            auto_notified_machines.append(m.get("machine_id"))
 
     return {
         "timestamp": timestamp,
-        "machines": machines
+        "machines": machines,
+        "auto_notified_machines": auto_notified_machines
     }
 
 @app.post("/api/alerts/notify-supervisor")

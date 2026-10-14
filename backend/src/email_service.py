@@ -43,7 +43,7 @@ from backend.src.db.connection import AsyncSessionLocal
 from backend.src.db.models import User, UserRole
 
 # Alert deduplication tracker (machine_id -> epoch timestamp of last alert)
-_ALERT_COOLDOWN_SECONDS = 1800  # 30-minute cooldown per machine to prevent spam
+_ALERT_COOLDOWN_SECONDS = 60  # 60-second cooldown per machine to prevent spamming ticks
 _last_alert_times: Dict[int, float] = {}
 
 
@@ -78,16 +78,24 @@ def get_smtp_config() -> Dict[str, Any]:
 
 async def get_supervisor_emails() -> List[str]:
     """
-    Fetches all active supervisor emails.
+    Fetches the 1st supervisor email.
     Combines:
-    1. Active supervisor accounts in PostgreSQL database (Neon)
-    2. Explicit SUPERVISOR_EMAIL in .env
+    1. Explicit SUPERVISOR_EMAIL in .env (takes top priority)
+    2. Active supervisor accounts in PostgreSQL database (Neon)
     3. Fallback to sender EMAIL if no other recipients found.
+    User constraint: ONLY sends to the 1st supervisor.
     """
     cfg = get_smtp_config()
-    emails = set()
+    emails = []
 
-    # 1. Fetch from database
+    # 1. Fetch from SUPERVISOR_EMAIL environment variable (highest priority)
+    if cfg.get("supervisor_email"):
+        for part in cfg["supervisor_email"].split(","):
+            part = part.strip().lower()
+            if part and "@" in part and part not in emails:
+                emails.append(part)
+
+    # 2. Fetch from PostgreSQL database
     try:
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -97,27 +105,25 @@ async def get_supervisor_emails() -> List[str]:
             )
             for e in result.scalars().all():
                 if e and "@" in e:
-                    emails.add(e.strip().lower())
+                    clean_e = e.strip().lower()
+                    if clean_e not in emails:
+                        emails.append(clean_e)
     except Exception as e:
         print(f"[!] EmailService: Error fetching supervisors from database: {e}")
 
-    # 2. Fetch from SUPERVISOR_EMAIL environment variable
-    if cfg.get("supervisor_email"):
-        for part in cfg["supervisor_email"].split(","):
-            part = part.strip().lower()
-            if part and "@" in part:
-                emails.add(part)
-
-    # If external emails exist, filter out dummy demo domain (@yantrawatch.com)
-    # so Gmail doesn't encounter deliverability errors
+    # Filter out dummy demo domain (@yantrawatch.com) if real external emails exist
     real_emails = [e for e in emails if not e.endswith("@yantrawatch.com")]
-    final_emails = real_emails if real_emails else list(emails)
+    final_emails = real_emails if real_emails else emails
 
     # 3. Fallback to sender if nothing found
     if not final_emails and cfg.get("user") and "@" in cfg["user"]:
         final_emails = [cfg["user"].lower()]
 
-    return final_emails
+    # USER REQUIREMENT: Only send to the 1st supervisor
+    if final_emails:
+        return [final_emails[0]]
+
+    return []
 
 
 def _send_email_sync(
@@ -564,6 +570,10 @@ async def notify_supervisors_on_machine_risk(
 
     # Update cooldown timestamp
     _last_alert_times[m_id] = now
+
+    print(
+        f"🚨 [Autonomous Sentinel] Failure risk detected on Unit #{m_id} (Status: {status}, P={risk_score*100:.1f}%) at {current_time or 'now'}. Auto-dispatching alert to 1st Supervisor: {supervisor_emails}..."
+    )
 
     subject = f"🚨 [YantraWatch Alert] Unit #{m_id} Critical Failure Risk ({risk_score * 100:.1f}%) - ₹{machine.get('expected_loss_inr', 0):,} at Risk"
     html_body = build_machine_alert_html(machine, current_time)

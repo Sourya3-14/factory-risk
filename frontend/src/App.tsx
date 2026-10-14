@@ -45,6 +45,7 @@ export function App() {
   const [isShiftBriefingOpen, setIsShiftBriefingOpen] = useState(false);
   const [shiftBriefing, setShiftBriefing] = useState<ShiftHandoverBriefing | null>(null);
   const [isBriefingLoading, setIsBriefingLoading] = useState(false);
+  const [sentinelToast, setSentinelToast] = useState<{ machineId: number; time: string } | null>(null);
 
   const playTimerRef = useRef<number | null>(null);
 
@@ -83,6 +84,12 @@ export function App() {
       try {
         const tickRes = await fetchStreamTick(isoTime);
         setCurrentMachines(tickRes.machines);
+
+        // Notify UI if automated alert was dispatched by sentinel
+        if (tickRes.auto_notified_machines && tickRes.auto_notified_machines.length > 0) {
+          setSentinelToast({ machineId: tickRes.auto_notified_machines[0], time: isoTime });
+          setTimeout(() => setSentinelToast(null), 5000);
+        }
 
         // Sync tasks against this simulated time
         const syncedTasks = await syncClockTasks(isoTime);
@@ -297,6 +304,39 @@ export function App() {
         onRefresh={loadShiftBriefing}
         onEmailSupervisors={handleEmailShiftBriefing}
       />
+
+      {/* Autonomous Failure Sentinel Toast Notification */}
+      {sentinelToast && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            background: 'linear-gradient(135deg, #7f1d1d, #991b1b)',
+            color: '#ffffff',
+            padding: '12px 18px',
+            borderRadius: '8px',
+            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            zIndex: 9999,
+            border: '1px solid #ef4444',
+            animation: 'fadeIn 0.3s ease-out',
+            maxWidth: '380px',
+          }}
+        >
+          <span style={{ fontSize: '24px', lineHeight: 1 }}>🚨</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '0.85rem', letterSpacing: '-0.2px' }}>
+              Autonomous Sentinel Alert!
+            </div>
+            <div style={{ fontSize: '0.75rem', opacity: 0.9, marginTop: '2px' }}>
+              Critical risk detected on Machine #{sentinelToast.machineId}. Automated alert emailed to 1st Supervisor.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
