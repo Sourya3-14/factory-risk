@@ -1,14 +1,18 @@
 /**
  * YantraWatch Auth Module
- * Handles token storage, auth state, and stubs for upcoming signup/login functionality.
+ * Connects directly to FastAPI backend with Neon PostgreSQL
  */
 
+export type UserRole = 'maintenance_engineer' | 'supervisor' | 'factory_owner';
+
 export interface User {
-  id: string;
+  id: string | number;
   name: string;
   email: string;
-  role: 'OPERATOR' | 'MAINTENANCE_MANAGER' | 'PLANT_HEAD' | 'ADMIN';
-  plantId?: string;
+  role: UserRole;
+  factory_name?: string;
+  phone_number?: string;
+  permissions?: string[];
 }
 
 export interface AuthState {
@@ -27,8 +31,9 @@ export interface SignupCredentials {
   name: string;
   email: string;
   password: string;
-  role?: string;
-  plantId?: string;
+  role: UserRole;
+  factory_name?: string;
+  phone_number?: string;
 }
 
 const TOKEN_KEY = 'yw_auth_token';
@@ -65,16 +70,10 @@ function notifyListeners() {
   listeners.forEach(fn => fn(currentAuthState));
 }
 
-/**
- * Retrieve current active token for API request headers
- */
 export function getAuthToken(): string | null {
   return currentAuthState.token || getStoredToken();
 }
 
-/**
- * Store and apply active JWT / session token
- */
 export function setAuthToken(token: string | null) {
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
@@ -89,16 +88,10 @@ export function setAuthToken(token: string | null) {
   notifyListeners();
 }
 
-/**
- * Retrieve current user profile
- */
 export function getCurrentUser(): User | null {
   return currentAuthState.user || getStoredUser();
 }
 
-/**
- * Store and apply current user profile
- */
 export function setCurrentUser(user: User | null) {
   if (user) {
     localStorage.setItem(USER_KEY, JSON.stringify(user));
@@ -113,9 +106,6 @@ export function setCurrentUser(user: User | null) {
   notifyListeners();
 }
 
-/**
- * Subscribe to authentication state changes
- */
 export function subscribeAuth(listener: AuthListener): () => void {
   listeners.add(listener);
   listener(currentAuthState);
@@ -124,73 +114,112 @@ export function subscribeAuth(listener: AuthListener): () => void {
   };
 }
 
-/**
- * Check if current session is authenticated
- */
 export function isAuthenticated(): boolean {
   return currentAuthState.isAuthenticated;
 }
 
-/* =========================================================================
-   Placeholder stubs ready for future Signup / Login implementation
-   ========================================================================= */
-
 /**
- * Login user (Stub for future API integration)
+ * Login user via backend API
  */
 export async function login(credentials: LoginCredentials): Promise<{ user: User; token: string }> {
-  // TODO: Replace with real POST /api/auth/login call when backend endpoints are wired
-  console.log('[Auth] Login requested with:', credentials.email);
-  
-  // Simulated success structure for quick testing
-  const dummyUser: User = {
-    id: 'usr_admin_01',
-    name: 'Shift Supervisor',
-    email: credentials.email,
-    role: 'PLANT_HEAD',
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || 'Login failed');
+  }
+
+  const user: User = {
+    id: data.user.id,
+    name: data.user.full_name,
+    email: data.user.email,
+    role: data.user.role as UserRole,
+    factory_name: data.user.factory_name,
+    phone_number: data.user.phone_number,
   };
-  const dummyToken = 'jwt_simulated_token_' + Date.now();
 
-  setAuthToken(dummyToken);
-  setCurrentUser(dummyUser);
+  setAuthToken(data.access_token);
+  setCurrentUser(user);
 
-  return { user: dummyUser, token: dummyToken };
+  return { user, token: data.access_token };
 }
 
 /**
- * Signup user (Stub for future API integration)
+ * Signup user via backend API
  */
 export async function signup(credentials: SignupCredentials): Promise<{ user: User; token: string }> {
-  // TODO: Replace with real POST /api/auth/signup call when backend endpoints are wired
-  console.log('[Auth] Signup requested for:', credentials.email);
+  const res = await fetch('/api/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: credentials.email,
+      password: credentials.password,
+      full_name: credentials.name,
+      role: credentials.role,
+      factory_name: credentials.factory_name || 'Yantra Manufacturing Unit 1',
+      phone_number: credentials.phone_number,
+    }),
+  });
 
-  const newUser: User = {
-    id: 'usr_' + Date.now(),
-    name: credentials.name,
-    email: credentials.email,
-    role: (credentials.role as User['role']) || 'OPERATOR',
-    plantId: credentials.plantId || 'PLANT_PUNE_01',
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || 'Signup failed');
+  }
+
+  const user: User = {
+    id: data.user.id,
+    name: data.user.full_name,
+    email: data.user.email,
+    role: data.user.role as UserRole,
+    factory_name: data.user.factory_name,
+    phone_number: data.user.phone_number,
   };
-  const token = 'jwt_simulated_token_' + Date.now();
 
-  setAuthToken(token);
-  setCurrentUser(newUser);
+  setAuthToken(data.access_token);
+  setCurrentUser(user);
 
-  return { user: newUser, token };
+  return { user, token: data.access_token };
+}
+
+/**
+ * Fetch current user profile with role permissions
+ */
+export async function fetchCurrentUser(): Promise<User | null> {
+  const token = getAuthToken();
+  if (!token) return null;
+
+  try {
+    const res = await fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      logout();
+      return null;
+    }
+    const data = await res.json();
+    const user: User = {
+      id: data.id,
+      name: data.full_name,
+      email: data.email,
+      role: data.role as UserRole,
+      factory_name: data.factory_name,
+      permissions: data.permissions,
+    };
+    setCurrentUser(user);
+    return user;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Logout user
  */
 export async function logout(): Promise<void> {
-  // TODO: Call POST /api/auth/logout if session invalidation is needed
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
-  currentAuthState = {
-    user: null,
-    token: null,
-    isAuthenticated: false,
-    isLoading: false,
-  };
-  notifyListeners();
+  setAuthToken(null);
+  setCurrentUser(null);
 }
