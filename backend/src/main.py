@@ -140,7 +140,7 @@ def get_gemma_explanation(req: ExplainRequest):
         telemetry=req.telemetry,
         top_factors=req.top_factors,
         photo_base64=req.photo_base64,
-        api_key=req.api_key
+        # api_key=req.api_key
     )
 
 @app.get("/api/tasks")
