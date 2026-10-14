@@ -10,6 +10,7 @@ import ssl
 import socket
 import asyncio
 import time
+import httpx
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import List, Dict, Any, Optional, Tuple
@@ -245,10 +246,90 @@ def _send_email_sync(
     return False, final_err
 
 
+async def _send_resend_email(
+    to_emails: List[str], subject: str, html_body: str, text_body: str
+) -> Tuple[bool, str]:
+    """
+    Sends email alert via Resend REST API (https://api.resend.com/emails).
+    Requires RESEND_API_KEY in .env.
+    """
+    api_key = os.getenv("RESEND_API_KEY", "").strip().strip('"').strip("'")
+    from_email = os.getenv("RESEND_FROM", "").strip().strip('"').strip("'") or "YantraWatch Sentinel <onboarding@resend.dev>"
+
+    if not api_key:
+        return False, "RESEND_API_KEY is not set in environment or .env."
+
+    payload = {
+        "from": from_email,
+        "to": to_emails,
+        "subject": subject,
+        "html": html_body,
+        "text": text_body,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "https://api.resend.com/emails", json=payload, headers=headers
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                email_id = data.get("id", "N/A")
+                print(f"[OK] EmailService: Sent via Resend API (ID: {email_id}) to {to_emails}")
+                return True, f"Alert email delivered via Resend (ID: {email_id}) to {', '.join(to_emails)}"
+            else:
+                try:
+                    err_json = resp.json()
+                    err_msg = err_json.get("message", resp.text)
+                except Exception:
+                    err_msg = resp.text
+                print(f"[!] EmailService: Resend API error ({resp.status_code}): {err_msg}")
+                return False, f"Resend API error ({resp.status_code}): {err_msg}"
+    except Exception as e:
+        print(f"[!] EmailService: Resend request exception: {e}")
+        return False, f"Resend network error: {e}"
+
+
 async def send_email_async(
     to_emails: List[str], subject: str, html_body: str, text_body: str
 ) -> Tuple[bool, str]:
-    """Non-blocking asynchronous wrapper for sending emails."""
+    """
+    Non-blocking email dispatcher.
+    Priority order:
+    1. Resend REST API (if RESEND_API_KEY is configured in .env)
+    2. Dev/Mock simulation (if SMTP_DEV_MODE=true in .env)
+    3. Direct SMTP relay (smtp.gmail.com:587/465)
+    """
+    reload_env()
+    cfg = get_smtp_config()
+
+    # 1. Check Resend REST API
+    resend_key = os.getenv("RESEND_API_KEY", "").strip().strip('"').strip("'")
+    if resend_key:
+        print(f"[*] EmailService: Using Resend REST API for {len(to_emails)} recipients...")
+        return await _send_resend_email(to_emails, subject, html_body, text_body)
+
+    # 2. Check Dev / Mock Mode
+    if cfg.get("dev_mode"):
+        try:
+            mock_dir = os.path.join(_current_dir, "../mock_emails")
+            os.makedirs(mock_dir, exist_ok=True)
+            filename = f"alert_{int(time.time())}.html"
+            filepath = os.path.join(mock_dir, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(html_body)
+            print(f"[DEV MODE] Alert email preview saved to {filepath}")
+            return True, f"[Dev Mode] Alert email preview saved to disk for {', '.join(to_emails)}"
+        except Exception as e:
+            print(f"[DEV MODE] Error saving preview file: {e}")
+            return True, f"[Dev Mode] Alert email simulated for {', '.join(to_emails)}"
+
+    # 3. Fallback to standard SMTP (Gmail/Custom)
     return await asyncio.to_thread(
         _send_email_sync, to_emails, subject, html_body, text_body
     )
